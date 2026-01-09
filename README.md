@@ -138,6 +138,3 @@ Technologie:
    - `php artisan serve` # Le backend sera accessible sur http://localhost:8000
    - `npm run dev` # Le dev server Vite démarre
 
-## Authentification 
- Email: admin@health.com
- Password: password  
