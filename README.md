@@ -78,7 +78,7 @@ Technologie:
 ## Outils de développement
 
  - Composer - Gestionnaire de dépendances PHP
- - NPM - Gestionnaire de dépendances Node.js
+  - NPM - Gestionnaire de dépendances Node.js
  - TypeScript Compiler - Compilation TypeScript
  - ESLint - Linter JavaScript/TypeScript
  - Prettier - Formateur de code

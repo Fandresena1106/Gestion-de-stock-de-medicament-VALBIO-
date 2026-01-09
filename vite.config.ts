@@ -60,7 +60,7 @@ export default defineConfig({
         |--------------------------------------------------------------------------
         */
         headers: {
-            'Access-Control-Allow-Origin': `http://${localIp}:${backendPort}`,
+            'Access-Control-Allow-Origin': `http://${localIp}:${backendPort}`,    
         },
     },
 

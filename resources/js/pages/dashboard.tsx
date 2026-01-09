@@ -16,31 +16,49 @@ import {
   CartesianGrid,
 } from 'recharts';
 
-// Définition du fil d’Ariane (breadcrumbs) pour la navigation dans l'interface
+/**
+ * Breadcrumbs affichés par le layout.
+ * Permet d'indiquer à l'utilisateur où il se trouve dans l'application.
+ */
 const breadcrumbs: BreadcrumbItem[] = [
   { title: 'Dashboard', href: dashboard().url },
 ];
 
-// Couleurs utilisées dans les graphiques
+/**
+ * Palette de couleurs réutilisée pour les graphiques.
+ * On garde un tableauiste pour avoir des couleurs constantes entre les charts.
+ */
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 
+/**
+ * Composant principal Dashboard
+ * - lit les données fournies par Inertia (usePage().props)
+ * - calcule des vues dérivées (useMemo) pour les graphiques et tableaux
+ * - propose des filtres côté client pour l'inventaire
+ * - affiche plusieurs widgets : pies, bar chart et table d'inventaire
+ */
 export default function Dashboard() {
-  // Récupère les props envoyées par le backend via Inertia.js
+  // Récupère les props envoyées depuis le contrôleur Laravel via Inertia.
   const props = usePage().props as any;
 
-  // Données principales envoyées du backend avec valeurs par défaut
+  // Valeurs par défaut si la backend n'envoie rien — évite les erreurs.
   const totals = props.totals ?? { medicaments: 0, entrees: 0, sorties: 0, stock: 0 };
   const stockPerMedicament = props.stockPerMedicament ?? [];
   const mostUsed = props.mostUsed ?? [];
   const villageUsage = props.villageUsage ?? [];
   const inventoryData = props.inventoryData ?? [];
 
-  // Etats locaux pour les filtres côté client (UI uniquement)
-  const [searchName, setSearchName] = useState('');
-  const [filterCategory, setFilterCategory] = useState('');
-  const [filterForm, setFilterForm] = useState('');
+  // --- États UI locaux (filtres côté client uniquement) ---
+  const [searchName, setSearchName] = useState('');       // recherche texte pour l'inventaire
+  const [filterCategory, setFilterCategory] = useState(''); // filtre catégorie
+  const [filterForm, setFilterForm] = useState('');       // filtre forme (ex: Tablet, Syrup)
 
-  // Fonction utilitaire pour récupérer la première clé non vide d'un objet parmi plusieurs possibles
+  // ---------------------------------------------------------------------
+  // Helper général : pickFirst
+  // But : rendre le code robuste aux différents noms de champs renvoyés par le backend.
+  // Ex : certains endpoints renvoient "nom_medoc", d'autres "medicine_name" ou "name".
+  // pickFirst(obj, ['nom_medoc','name']) renvoie la première valeur non nulle/non vide.
+  // ---------------------------------------------------------------------
   const pickFirst = (obj: any, keys: string[]) => {
     if (!obj) return undefined;
     for (const k of keys) {
@@ -49,18 +67,27 @@ export default function Dashboard() {
     return undefined;
   };
 
-  // Fonctions pour extraire des informations des objets medicaments (robustes à différentes structures)
+  // -------------------------
+  // Getters / extracteurs
+  // -------------------------
+  // Obtenir le nom (compatible plusieurs clés)
   const getName = (m: any) => String(pickFirst(m, ['nom_medoc', 'medicine_name', 'name']) ?? `Med #${m?.id_medoc ?? ''}`).trim();
+
+  // Obtenir la "forme" / description (tablet, syrup, etc.)
   const getForm = (m: any) => String(pickFirst(m, ['description', 'forme', 'form']) ?? '').trim();
+
+  // Obtenir dosage + unité de façon concis (ex: "500mg" ou "12.5ml")
   const getDosage = (m: any) => {
     const mesure = pickFirst(m, ['mesure', 'measure', 'strength']);
     const unite = pickFirst(m, ['unite', 'unit', 'dosage_unit']);
     if (mesure && unite) return `${mesure}${unite}`;
     return String(mesure ?? unite ?? '').trim();
   };
+
+  // Obtenir l'unité d'inventaire (blister, bottle, units, etc.) avec fallback 'units'
   const getInventoryUnit = (m: any) => String(pickFirst(m, ['unite_mesure', 'unite', 'unit', 'unit_label', 'inventory_unit']) ?? 'units');
 
-  // Combine nom, forme et dosage pour créer un libellé complet
+  // Concatène nom + forme + dosage pour afficher une chaîne lisible
   const getFullLabel = (m: any) => {
     const name = getName(m);
     const form = getForm(m);
@@ -68,16 +95,25 @@ export default function Dashboard() {
     return `${name}${form ? ` ${form}` : ''}${dosage ? ` ${dosage}` : ''}`.trim();
   };
 
-  // Calcule le nombre de jours restant avant la date d'expiration
+  /**
+   * Obtenir le nombre de jours restants avant expiration.
+   * - retourne 999 si aucune date fournie (privilégie l'affichage plutôt que l'erreur)
+   * - arrondit vers le haut (Math.ceil)
+   */
   const getDaysUntilExpiry = (dateStr: string | null) => {
-    if (!dateStr) return 999; // si pas de date, retourne un nombre très élevé
+    if (!dateStr) return 999;
     const today = new Date();
     const expiry = new Date(dateStr);
     const diff = expiry.getTime() - today.getTime();
     return Math.ceil(diff / (1000 * 60 * 60 * 24));
   };
 
-  // Pluralise l'unité selon la quantité (anglais simple)
+  /**
+   * Pluralization simple pour l'unité (anglais)
+   * - ajoute 's' si qty != 1
+   * - retire 's' si qty == 1 et unité fournie au pluriel
+   * Note: intention : UX lisible sur les tooltips / badges.
+   */
   const pluralizeUnit = (unit: string, qty: number) => {
     if (!unit) return '';
     const u = String(unit).trim();
@@ -87,16 +123,20 @@ export default function Dashboard() {
     return u.endsWith('s') ? u : `${u}s`;
   };
 
-  // Prépare les données des villages pour le graphique camembert (limité à 8 items)
+  // -------------------------
+  // Transformations de données (useMemo pour perf)
+  // -------------------------
+  // Village consumption => données pour le pie chart
   const villagesData = useMemo(() => {
     if (!Array.isArray(villageUsage) || villageUsage.length === 0) return [];
     return villageUsage.slice(0, 8).map((v: any) => ({
       name: v.village ?? 'Unknown',
+      // utilise plusieurs clés possibles pour la valeur (robustesse backend)
       value: Number(pickFirst(v, ['med_count', 'total_medicaments', 'total', 'distinct_meds']) ?? 0),
     }));
   }, [villageUsage]);
 
-  // Prépare les données des médicaments les plus utilisés pour le graphique en barres
+  // Top medicines => format pour le bar chart "Most Used"
   const topMedicinesData = useMemo(() => {
     if (!Array.isArray(mostUsed) || mostUsed.length === 0) return [];
     return mostUsed.slice(0, 8).map((m: any) => {
@@ -110,10 +150,11 @@ export default function Dashboard() {
     });
   }, [mostUsed]);
 
-  // Prépare les données de distribution du stock pour le graphique camembert
+  // Stock distribution => données pour le pie chart stock
   const stockDistributionData = useMemo(() => {
     if (!Array.isArray(stockPerMedicament) || stockPerMedicament.length === 0) return [];
     return stockPerMedicament
+      // filtre uniquement les produits avec un stock > 0
       .filter((m: any) => Number(pickFirst(m, ['stock', 'qty', 'quantity']) ?? 0) > 0)
       .slice(0, 8)
       .map((m: any) => ({
@@ -126,17 +167,21 @@ export default function Dashboard() {
       }));
   }, [stockPerMedicament]);
 
-  // --- Liste des catégories et formes distinctes utilisées pour les filtres ---
+  // -------------------------
+  // Dériver listes pour les filtres (catégories / formes)
+  // -------------------------
+  // categories : prend les valeurs uniques trouvées dans inventoryData
   const categories = useMemo(() => {
     const set = new Set<string>();
     (inventoryData || []).forEach((m: any) => {
       const cat = pickFirst(m, ['category', 'categorie', 'type']);
       if (cat) set.add(String(cat));
     });
-    // Tri alphabétique sensible aux accents en français
+    // trie avec locale 'fr' pour mieux gérer accents et casse
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'fr', { sensitivity: 'base' }));
   }, [inventoryData]);
 
+  // forms : forme (description) collectée et triée
   const forms = useMemo(() => {
     const set = new Set<string>();
     (inventoryData || []).forEach((m: any) => {
@@ -146,26 +191,30 @@ export default function Dashboard() {
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'fr', { sensitivity: 'base' }));
   }, [inventoryData]);
 
-  // --- Filtrage côté client selon recherche et filtres sélectionnés ---
+  // -------------------------
+  // Filtres locaux sur l'inventaire
+  // - combine recherche texte + select category + select form
+  // - renvoie une liste triée alphabétiquement par label complet
+  // -------------------------
   const filteredInventoryData = useMemo(() => {
     if (!Array.isArray(inventoryData)) return [];
     const term = (searchName || '').trim().toLowerCase();
 
     const filtered = inventoryData.filter((m: any) => {
-      // Filtre par nom/label
+      // recherche sur le label complet (nom + forme + dosage)
       const label = getFullLabel(m).toLowerCase();
       if (term) {
         if (!label.includes(term)) return false;
       }
 
-      // Filtre par catégorie
+      // filtre catégorie (si sélectionnée)
       if (filterCategory) {
         const cat = String(pickFirst(m, ['category', 'categorie', 'type']) ?? '').trim();
         if (!cat) return false;
         if (cat.toLowerCase() !== filterCategory.toLowerCase()) return false;
       }
 
-      // Filtre par forme
+      // filtre forme (si sélectionnée)
       if (filterForm) {
         const f = getForm(m) || '';
         if (!f) return false;
@@ -175,33 +224,37 @@ export default function Dashboard() {
       return true;
     });
 
-    // Trie alphabétique des résultats filtrés (locale française)
+    // tri alphabétique par label complet (locale-aware)
     return filtered.sort((a: any, b: any) => getFullLabel(a).localeCompare(getFullLabel(b), 'fr', { sensitivity: 'base' }));
   }, [inventoryData, searchName, filterCategory, filterForm]);
 
-  // Composant pour ne pas afficher les labels des parts de camembert
+  // Placeholder pour label *dans* le pie (nous affichons les labels via tooltip seulement)
   const renderLabelPlaceholder = (_: any) => '';
 
+  // -------------------------
+  // Rendu JSX
+  // -------------------------
   return (
     <AppLayout breadcrumbs={breadcrumbs}>
+      {/* Head (titre de la page) */}
       <Head title="Dashboard" />
 
       <div className="p-4 lg:p-6 space-y-4 lg:space-y-6">
-        {/* Entête principal */}
+        {/* ---------- Header ---------- */}
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
           <div>
             <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">Dashboard</h1>
           </div>
+
+          {/* Date actuelle (affichage lisible) */}
           <div className="text-xs lg:text-sm text-gray-500">
-            {/* Affiche la date actuelle en format long anglais */}
             {new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
           </div>
         </div>
 
-        {/* Section des graphiques */}
+        {/* ---------- Charts Row (3 colonnes sur large écran) ---------- */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
-
-          {/* Graphique camembert : consommation par village */}
+          {/* Village Consumption (Pie) */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 lg:p-5">
             <div className="flex items-center justify-between mb-3 lg:mb-4">
               <h3 className="text-sm lg:text-base font-bold text-gray-900">Village Consumption</h3>
@@ -209,11 +262,13 @@ export default function Dashboard() {
             </div>
 
             <div style={{ width: '100%', height: 240 }}>
+              {/* Affiche message si pas de données */}
               {villagesData.length === 0 ? (
                 <div className="flex items-center justify-center h-full"><p className="text-sm text-gray-400">No data available</p></div>
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
+                    {/* Pie sans labels extérieurs (design choisi) */}
                     <Pie
                       data={villagesData}
                       dataKey="value"
@@ -221,14 +276,13 @@ export default function Dashboard() {
                       cx="50%"
                       cy="50%"
                       outerRadius={80}
-                      label={false}        // suppression labels hors du camembert
-                      labelLine={false}    // suppression lignes de liaison
+                      label={false}
+                      labelLine={false}
                     >
-                      {/* Colorie chaque part du graphique */}
                       {villagesData.map((_, idx) => <Cell key={idx} fill={COLORS[idx % COLORS.length]} />)}
                     </Pie>
 
-                    {/* Tooltip personnalisé au survol */}
+                    {/* Tooltip custom pour afficher nom + nombre */}
                     <Tooltip
                       content={({ active, payload }) => {
                         if (active && payload && payload.length) {
@@ -252,7 +306,7 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Graphique barres : médicaments les plus utilisés */}
+          {/* Most Used Medicines (Bar chart) */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 lg:p-5">
             <div className="flex items-center justify-between mb-3 lg:mb-4">
               <h3 className="text-sm lg:text-base font-bold text-gray-900">Most Used Medicines</h3>
@@ -284,6 +338,7 @@ export default function Dashboard() {
                       cursor={false}
                       wrapperStyle={{ outline: 'none' }}
                     />
+                    {/* Bar simple avec rayon arrondi */}
                     <Bar dataKey="quantity" name="Quantity" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
@@ -291,7 +346,7 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Graphique camembert : distribution du stock */}
+          {/* Stock Distribution (Pie) */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 lg:p-5">
             <div className="flex items-center justify-between mb-3 lg:mb-4">
               <h3 className="text-sm lg:text-base font-bold text-gray-900">Stock Distribution</h3>
@@ -311,12 +366,13 @@ export default function Dashboard() {
                       cx="50%"
                       cy="50%"
                       outerRadius={80}
-                      label={false}        // suppression labels hors du camembert
-                      labelLine={false}    // suppression lignes de liaison
+                      label={false}
+                      labelLine={false}
                     >
                       {stockDistributionData.map((_, idx) => <Cell key={idx} fill={COLORS[idx % COLORS.length]} />)}
                     </Pie>
 
+                    {/* Tooltip détaillé (stock, entrées, sorties) */}
                     <Tooltip
                       content={({ active, payload }) => {
                         if (active && payload && payload.length) {
@@ -344,9 +400,9 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Tableau d'inventaire des médicaments */}
+        {/* ---------- Inventory Table ---------- */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-          {/* En-tête tableau */}
+          {/* Header table */}
           <div className="px-4 lg:px-6 py-4 border-b bg-gray-50 rounded-t-xl">
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
               <div>
@@ -357,7 +413,7 @@ export default function Dashboard() {
                 <span className="text-xs lg:text-sm text-gray-600">
                   Total: <span className="font-bold text-gray-900">{totals.medicaments}</span> medicines
                 </span>
-                {/* Affiche nombre de médicaments qui expirent bientôt */}
+                {/* Alerte "expiring soon" si des produits arrivent à expiration dans 30 jours */}
                 {filteredInventoryData.filter((m: any) => getDaysUntilExpiry(m.expiry_date) <= 30).length > 0 && (
                   <span className="px-2 lg:px-3 py-1 bg-red-100 text-red-800 rounded-full text-xs font-bold">
                     ⚠️ {filteredInventoryData.filter((m: any) => getDaysUntilExpiry(m.expiry_date) <= 30).length} expiring soon
@@ -367,95 +423,116 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Filtres et barre de recherche */}
-          <div className="px-4 lg:px-6 py-3 border-b flex flex-wrap gap-2 items-center bg-gray-50">
-            <input
-              type="search"
-              placeholder="Search medicine..."
-              className="flex-grow max-w-xs rounded-md border border-gray-300 px-3 py-2 text-sm"
-              value={searchName}
-              onChange={(e) => setSearchName(e.target.value)}
-              spellCheck={false}
-              autoComplete="off"
-            />
+          {/* Barre recherche + selects */}
+          <div className="px-4 lg:px-6 py-3 border-b">
+            <div className="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
+              <div className="flex items-center gap-2 w-full lg:w-2/3">
+                <input
+                  type="text"
+                  value={searchName}
+                  onChange={(e) => setSearchName(e.target.value)}
+                  placeholder="Search by name, dosage..."
+                  className="w-full lg:w-2/3 px-3 py-2 border rounded-md text-sm focus:outline-none"
+                />
 
-            <select
-              className="rounded-md border border-gray-300 text-sm px-3 py-2"
-              value={filterCategory}
-              onChange={(e) => setFilterCategory(e.target.value)}
-            >
-              <option value="">All Categories</option>
-              {categories.map((cat) => (
-                <option key={cat} value={cat}>{cat}</option>
-              ))}
-            </select>
+                <select
+                  value={filterCategory}
+                  onChange={(e) => setFilterCategory(e.target.value)}
+                  className="px-3 py-2 border rounded-md text-sm"
+                >
+                  <option value="">All categories</option>
+                  {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
 
-            <select
-              className="rounded-md border border-gray-300 text-sm px-3 py-2"
-              value={filterForm}
-              onChange={(e) => setFilterForm(e.target.value)}
-            >
-              <option value="">All Forms</option>
-              {forms.map((form) => (
-                <option key={form} value={form}>{form}</option>
-              ))}
-            </select>
+                {/* Reset des filtres côté client */}
+                <button
+                  type="button"
+                  onClick={() => { setSearchName(''); setFilterCategory(''); setFilterForm(''); }}
+                  className="px-3 py-2 bg-gray-100 border rounded-md text-sm"
+                >
+                  Clear
+                </button>
+              </div>
 
-            {/* Bouton de réinitialisation */}
-            {(searchName || filterCategory || filterForm) && (
-              <button
-                className="text-gray-500 hover:text-gray-700 text-sm"
-                title="Reset filters"
-                onClick={() => {
-                  setSearchName('');
-                  setFilterCategory('');
-                  setFilterForm('');
-                }}
-                type="button"
-              >
-                Reset
-              </button>
-            )}
+              <div className="text-xs lg:text-sm text-gray-600">Showing <span className="font-semibold">{filteredInventoryData.length}</span> medicine{filteredInventoryData.length !== 1 ? 's' : ''}</div>
+            </div>
           </div>
 
-          {/* Table des données */}
-          <div className="overflow-x-auto max-h-[400px]">
-            <table className="w-full table-fixed border-collapse border border-gray-200 text-sm text-left text-gray-700">
-              <thead className="bg-gray-100 sticky top-0">
+          {/* Table body */}
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50 border-b">
                 <tr>
-                  <th className="border border-gray-300 px-3 py-2 w-[32%]">Medicine</th>
-                  <th className="border border-gray-300 px-3 py-2 w-[20%]">Stock</th>
-                  <th className="border border-gray-300 px-3 py-2 w-[20%]">Entries</th>
-                  <th className="border border-gray-300 px-3 py-2 w-[20%]">Exits</th>
-                  <th className="border border-gray-300 px-3 py-2 w-[8%]">Expiry</th>
+                  <th className="px-4 lg:px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Medicine</th>
+                  <th className="px-4 lg:px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Category</th>
+                  <th className="px-4 lg:px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Stock</th>
+                  <th className="px-4 lg:px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Expiry Date</th>
+                  <th className="px-4 lg:px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Status</th>
                 </tr>
               </thead>
-              <tbody>
+
+              <tbody className="divide-y divide-gray-200">
+                {/* Message si inventaire vide */}
                 {filteredInventoryData.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="text-center text-gray-500 py-4">No medicines found.</td>
+                    <td colSpan={5} className="px-4 lg:px-6 py-12 text-center"><p className="text-gray-500">No medicines in inventory</p></td>
                   </tr>
                 ) : (
-                  filteredInventoryData.map((m: any) => {
-                    const stock = Number(pickFirst(m, ['stock', 'qty', 'quantity']) ?? 0);
-                    const entries = Number(pickFirst(m, ['total_entrees', 'entries']) ?? 0);
-                    const exits = Number(pickFirst(m, ['total_sorties', 'exits']) ?? 0);
-                    const expiryDate = m.expiry_date;
-                    const daysUntilExpiry = getDaysUntilExpiry(expiryDate);
-
-                    // Coloration selon expiration
-                    let expiryClass = 'text-gray-700';
-                    if (daysUntilExpiry <= 0) expiryClass = 'text-red-600 font-bold';         // expiré
-                    else if (daysUntilExpiry <= 30) expiryClass = 'text-orange-600 font-semibold'; // bientôt expiré
+                  filteredInventoryData.map((med: any, idx: number) => {
+                    // Calculs d'état d'expiration et de stock pour chaque ligne
+                    const daysLeft = getDaysUntilExpiry(med.expiry_date);
+                    const isCritical = daysLeft <= 30;
+                    const isWarning = daysLeft > 30 && daysLeft <= 60;
+                    const unit = getInventoryUnit(med);
+                    const fullLabel = getFullLabel(med);
+                    const stockVal = Number(pickFirst(med, ['stock','qty','quantity']) ?? 0);
 
                     return (
-                      <tr key={m.id_medoc ?? m.medicine_id} className="odd:bg-white even:bg-gray-50 hover:bg-gray-100">
-                        <td className="border border-gray-300 px-3 py-2 font-semibold">{getFullLabel(m)}</td>
-                        <td className="border border-gray-300 px-3 py-2">{stock} {pluralizeUnit(getInventoryUnit(m), stock)}</td>
-                        <td className="border border-gray-300 px-3 py-2">{entries} {pluralizeUnit(getInventoryUnit(m), entries)}</td>
-                        <td className="border border-gray-300 px-3 py-2">{exits} {pluralizeUnit(getInventoryUnit(m), exits)}</td>
-                        <td className={`border border-gray-300 px-3 py-2 text-center ${expiryClass}`}>
-                          {expiryDate ? new Date(expiryDate).toLocaleDateString('fr-FR') : '-'}
+                      <tr key={idx} className={`${isCritical ? 'bg-red-50' : isWarning ? 'bg-yellow-50' : 'hover:bg-gray-50'} transition`}>
+                        <td className="px-4 lg:px-6 py-3 lg:py-4">
+                          <div>
+                            <p className="font-semibold text-sm lg:text-base text-gray-900">{fullLabel}</p>
+                            <div className="flex items-center gap-2 mt-1">
+                              <p className="text-xs text-gray-500">ID: {pickFirst(med, ['medicine_id','id_medoc','id']) ?? '—'}</p>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="px-4 lg:px-6 py-3 lg:py-4">
+                          {pickFirst(med, ['category','categorie','type']) ? (
+                            <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-medium">{pickFirst(med, ['category','categorie','type'])}</span>
+                          ) : (
+                            <span className="text-gray-400 text-xs">Uncategorized</span>
+                          )}
+                        </td>
+
+                        <td className="px-4 lg:px-6 py-3 lg:py-4">
+                          <span className={`px-2 lg:px-3 py-1 rounded-full text-xs lg:text-sm font-bold whitespace-nowrap ${stockVal > 20 ? 'bg-green-100 text-green-800' : stockVal > 5 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>
+                            {stockVal} {pluralizeUnit(unit, stockVal)}
+                          </span>
+                        </td>
+
+                        <td className="px-4 lg:px-6 py-3 lg:py-4">
+                          <div className="flex flex-col">
+                            <span className={`font-semibold text-xs lg:text-sm ${isCritical ? 'text-red-600' : isWarning ? 'text-yellow-600' : 'text-gray-900'}`}>
+                              {med.expiry_date ? new Date(med.expiry_date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A'}
+                            </span>
+                            {med.expiry_date && (
+                              <span className={`text-xs mt-1 ${isCritical ? 'text-red-600 font-bold' : 'text-gray-500'}`}>
+                                {daysLeft < 0 ? 'Expired' : `${daysLeft} day${daysLeft !== 1 ? 's' : ''} left`}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+
+                        <td className="px-4 lg:px-6 py-3 lg:py-4">
+                          {isCritical ? (
+                            <span className="px-2 lg:px-3 py-1 bg-red-100 text-red-800 rounded-full text-xs font-bold whitespace-nowrap">🚨 URGENT</span>
+                          ) : isWarning ? (
+                            <span className="px-2 lg:px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-xs font-bold whitespace-nowrap">⚠️ Warning</span>
+                          ) : (
+                            <span className="px-2 lg:px-3 py-1 bg-green-100 text-green-800 rounded-full text-xs font-bold whitespace-nowrap">✓ OK</span>
+                          )}
                         </td>
                       </tr>
                     );
@@ -464,6 +541,20 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
+
+          {/* Footer table : résumé et légendes */}
+          {filteredInventoryData.length > 0 && (
+            <div className="px-4 lg:px-6 py-3 lg:py-4 bg-gray-50 border-t rounded-b-xl">
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 text-xs lg:text-sm">
+                <span className="text-gray-600">Showing <span className="font-semibold">{filteredInventoryData.length}</span> medicine{filteredInventoryData.length !== 1 ? 's' : ''}</span>
+                <div className="flex flex-wrap items-center gap-3 lg:gap-4">
+                  <div className="flex items-center gap-2"><span className="w-3 h-3 bg-red-100 rounded-full"></span><span className="text-xs text-gray-600">Critical (≤30d)</span></div>
+                  <div className="flex items-center gap-2"><span className="w-3 h-3 bg-yellow-100 rounded-full"></span><span className="text-xs text-gray-600">Warning (≤60d)</span></div>
+                  <div className="flex items-center gap-2"><span className="w-3 h-3 bg-green-100 rounded-full"></span><span className="text-xs text-gray-600">OK (+60d)</span></div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </AppLayout>
